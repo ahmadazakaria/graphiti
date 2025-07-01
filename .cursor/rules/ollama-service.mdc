@@ -1,0 +1,19 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Ollama Service Configuration
+
+The Ollama service is defined in [docker-compose.yml](mdc:mcp_server/docker-compose.yml) under the `graphiti_mcp_ollama` key. To ensure the model is pulled before serving, the service uses a custom entrypoint and command:
+
+- **Entrypoint:**
+  ```yaml
+  entrypoint: ["sh", "-c"]
+  ```
+- **Command:**
+  ```yaml
+  command: "ollama pull deepseek-r1:8b && ollama serve"
+  ```
+
+This ensures the container first pulls the `deepseek-r1:8b` model, then starts the Ollama server. The service also maps the host port `${OLLAMA_PORT:-11434}` to container port `11434` and mounts the `graphiti_mcp_ollama` volume to `/root/.ollama` for model persistence.
