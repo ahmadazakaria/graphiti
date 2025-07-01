@@ -378,3 +378,38 @@ For complete details about what's collected and why, see the [Telemetry section 
 ## License
 
 This project is licensed under the same license as the parent Graphiti project.
+
+# MCP Server Project Report
+
+## Project Overview
+The MCP (Multi-Component Platform) server is designed to orchestrate and serve advanced AI and graph-based functionalities. It acts as a backend service that integrates a large language model (LLM) via Ollama, a graph database via Neo4j, and exposes endpoints for real-time and batch processing, such as Server-Sent Events (SSE).
+
+## Architecture Diagram & Docker Relationships
+
+Below is a visual representation of the MCP system architecture and the relationships between the Docker containers and volumes:
+
+```mermaid
+flowchart TD
+    subgraph Docker_Network[Docker Compose Network]
+        OLLAMA["Ollama (graphiti_mcp_ollama)\nPort: 11434 (host: 11435)"]
+        NEO4J["Neo4j\nHTTP: 7474 (host: 7476)\nBolt: 7687 (host: 7688)"]
+        MCP["Graphiti MCP Server (graphiti-mcp)\nPort: 8000 (host: 8001)"]
+    end
+
+    OLLAMA -- "LLM API Calls" --> MCP
+    MCP -- "Bolt (Graph Queries)" --> NEO4J
+    MCP -- "HTTP API/SSE" --- Client["Client (Browser, Cursor, etc.)"]
+    NEO4J -- "Neo4j Browser" --- Neo4jWeb["Neo4j Web UI\n(http://localhost:7476/browser/)"]
+    OLLAMA -- "Model Pull/Serve" --- OllamaVol["Persistent Volume\n(graphiti_mcp_ollama)"]
+    NEO4J -- "Data/Logs" --- Neo4jVol["Volumes: neo4j_data, neo4j_logs"]
+    
+    classDef docker fill:#e0f7fa,stroke:#00796b,stroke-width:2px;
+    class OLLAMA,NEO4J,MCP docker;
+```
+
+**Description:**
+- All services are connected via the Docker Compose network.
+- **Ollama** provides LLM API calls to the MCP server and persists models in a Docker volume.
+- **Graphiti MCP** communicates with Ollama for LLM and with Neo4j for graph queries (via Bolt).
+- **Neo4j** exposes HTTP and Bolt ports, stores data/logs in volumes, and provides a web UI.
+- **Clients** (like your browser or Cursor) interact with the MCP server (API/SSE) and can access the Neo4j web UI.
