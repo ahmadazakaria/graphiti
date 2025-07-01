@@ -1,0 +1,7 @@
+{
+  "Ollama model deepseek-r1:8b available": "PASS",
+  "Neo4j is healthy": "FAIL",
+  "Graphiti MCP SSE endpoint is accessible": "FAIL",
+  "Ollama returned a valid response": "PASS",
+  "_summary": "complete"
+}
