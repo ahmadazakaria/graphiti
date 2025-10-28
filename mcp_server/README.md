@@ -82,7 +82,7 @@ uv sync
 
 ## Configuration
 
-The server supports both Neo4j and FalkorDB as database backends. Use the `DATABASE_TYPE` environment variable to choose between them.
+The server supports Neo4j, FalkorDB, and Kuzu as database backends. Use the `DATABASE_TYPE` environment variable or the `--database-type` CLI argument to choose between them.
 
 #### Neo4j Configuration (default)
 
@@ -96,6 +96,37 @@ The server supports both Neo4j and FalkorDB as database backends. Use the `DATAB
 - `FALKORDB_PORT`: FalkorDB port (default: `6379`)
 - `FALKORDB_USERNAME`: FalkorDB username (optional)
 - `FALKORDB_PASSWORD`: FalkorDB password (optional)
+
+#### Kuzu Configuration (lightweight & embedded)
+
+Kuzu is a lightweight, embedded graph database that runs in-process without requiring a separate server. It's ideal for development, testing, or lightweight production deployments.
+
+- `DATABASE_TYPE`: Set to `kuzu`
+- `KUZU_DB`: Path to database directory or `:memory:` (default: `:memory:`)
+  - `:memory:`: Data stored in memory only (lost on restart)
+  - `./data/graphiti.kuzu`: Persistent file-based database (recommended for production)
+  - Database files stay within your project repository
+
+**Installation:**
+```bash
+# Install Graphiti with Kuzu support
+uv sync --extra kuzu
+
+# Or with pip
+pip install graphiti-core[kuzu]
+```
+
+**Running with Kuzu:**
+```bash
+# In-memory mode (for development/testing)
+export OPENAI_API_KEY="your-key"
+export DATABASE_TYPE="kuzu"
+uv run graphiti_mcp_server.py --transport stdio --database-type kuzu --group-id my-project
+
+# Persistent mode (for production)
+export KUZU_DB="./data/graphiti.kuzu"
+uv run graphiti_mcp_server.py --transport stdio --database-type kuzu --group-id my-project
+```
 
 - `OPENAI_API_KEY`: OpenAI API key (required for LLM operations)
 - `OPENAI_BASE_URL`: Optional base URL for OpenAI API
@@ -126,6 +157,7 @@ With options:
 
 ```bash
 uv run graphiti_mcp_server.py --model gpt-4.1-mini --transport sse --database-type falkordb --port 8001
+uv run graphiti_mcp_server.py --model gpt-4.1-mini --transport stdio --database-type kuzu
 ```
 
 Available arguments:
@@ -134,7 +166,7 @@ Available arguments:
 - `--small-model`: Overrides the `SMALL_MODEL_NAME` environment variable.
 - `--temperature`: Overrides the `LLM_TEMPERATURE` environment variable.
 - `--transport`: Choose the transport method (sse or stdio, default: sse)
-- `--database-type`: Choose database backend (neo4j or falkordb, default: neo4j)
+- `--database-type`: Choose database backend (neo4j, falkordb, or kuzu; default: neo4j)
 - `--group-id`: Set a namespace for the graph (optional). If not provided, defaults to "default".
 - `--destroy-graph`: If set, destroys all Graphiti graphs on startup.
 - `--use-custom-entities`: Enable entity extraction using the predefined ENTITY_TYPES
@@ -252,6 +284,8 @@ To use the Graphiti MCP server with an MCP-compatible client, configure it to co
 >
 > Ensure that you set the full path to the `uv` binary and your Graphiti project folder.
 
+#### Neo4j (stdio transport)
+
 ```json
 {
   "mcpServers": {
@@ -275,6 +309,37 @@ To use the Graphiti MCP server with an MCP-compatible client, configure it to co
         "NEO4J_PASSWORD": "password",
         "OPENAI_API_KEY": "sk-XXXXXXXX",
         "MODEL_NAME": "gpt-4.1-mini"
+      }
+    }
+  }
+}
+```
+
+#### Kuzu (stdio transport) - Recommended for lightweight use
+
+```json
+{
+  "mcpServers": {
+    "graphiti-memory": {
+      "transport": "stdio",
+      "command": "/home/user/.local/bin/uv",
+      "args": [
+        "run",
+        "--directory",
+        "/home/user/projects/graphiti/mcp_server",
+        "--extra",
+        "kuzu",
+        "graphiti_mcp_server.py",
+        "--transport",
+        "stdio",
+        "--database-type",
+        "kuzu"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "sk-XXXXXXXX",
+        "MODEL_NAME": "gpt-4.1-mini",
+        "KUZU_DB": "./data/graphiti.kuzu",
+        "GRAPHITI_TELEMETRY_ENABLED": "false"
       }
     }
   }

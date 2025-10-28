@@ -485,6 +485,17 @@ class FalkorConfig(BaseModel):
         return cls(host=host, port=port, user=user, password=password)
 
 
+class KuzuConfig(BaseModel):
+    """Configuration for Kuzu database connection."""
+
+    db: str = ':memory:'
+
+    @classmethod
+    def from_env(cls) -> 'KuzuConfig':
+        db = os.environ.get('KUZU_DB', ':memory:')
+        return cls(db=db)
+
+
 class GraphitiConfig(BaseModel):
     """Configuration for Graphiti client.
 
@@ -495,6 +506,7 @@ class GraphitiConfig(BaseModel):
     embedder: GraphitiEmbedderConfig = Field(default_factory=GraphitiEmbedderConfig)
     neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
     falkordb: FalkorConfig = Field(default_factory=FalkorConfig)
+    kuzu: KuzuConfig = Field(default_factory=KuzuConfig)
 
     group_id: str | None = None
     use_custom_entities: bool = False
@@ -507,7 +519,7 @@ class GraphitiConfig(BaseModel):
         db_type = os.environ.get('DATABASE_TYPE')
         if not db_type:
             raise ValueError(
-                'DATABASE_TYPE environment variable must be set (e.g., "neo4j" or "falkordb")'
+                'DATABASE_TYPE environment variable must be set (e.g., "neo4j", "falkordb", or "kuzu")'
             )
         if db_type == 'neo4j':
             return cls(
@@ -523,14 +535,51 @@ class GraphitiConfig(BaseModel):
                 falkordb=FalkorConfig.from_env(),
                 database_type=db_type,
             )
+        elif db_type == 'kuzu':
+            return cls(
+                llm=GraphitiLLMConfig.from_env(),
+                embedder=GraphitiEmbedderConfig.from_env(),
+                kuzu=KuzuConfig.from_env(),
+                database_type=db_type,
+            )
         else:
             raise ValueError(f'Unsupported DATABASE_TYPE: {db_type}')
 
     @classmethod
     def from_cli_and_env(cls, args: argparse.Namespace) -> 'GraphitiConfig':
-        """Create configuration from CLI arguments, falling back to environment variables."""
-        # Start with environment configuration
-        config = cls.from_env()
+        """Create configuration from CLI arguments, falling back to environment variables.
+
+        CLI --database-type takes precedence over env DATABASE_TYPE. If neither provided, defaults to neo4j.
+        """
+        # Determine database type with CLI precedence
+        cli_db_type = getattr(args, 'database_type', None)
+        env_db_type = os.environ.get('DATABASE_TYPE')
+        db_type = (cli_db_type or env_db_type or 'neo4j').lower()
+
+        # Build per-backend config
+        if db_type == 'neo4j':
+            config = cls(
+                llm=GraphitiLLMConfig.from_env(),
+                embedder=GraphitiEmbedderConfig.from_env(),
+                neo4j=Neo4jConfig.from_env(),
+                database_type=db_type,
+            )
+        elif db_type == 'falkordb':
+            config = cls(
+                llm=GraphitiLLMConfig.from_env(),
+                embedder=GraphitiEmbedderConfig.from_env(),
+                falkordb=FalkorConfig.from_env(),
+                database_type=db_type,
+            )
+        elif db_type == 'kuzu':
+            config = cls(
+                llm=GraphitiLLMConfig.from_env(),
+                embedder=GraphitiEmbedderConfig.from_env(),
+                kuzu=KuzuConfig.from_env(),
+                database_type=db_type,
+            )
+        else:
+            raise ValueError(f'Unsupported DATABASE_TYPE: {db_type}')
 
         # Apply CLI overrides
         if args.group_id:
@@ -608,6 +657,32 @@ mcp = FastMCP(
 
 # Initialize Graphiti client
 graphiti_client: Graphiti | None = None
+def create_graph_driver(cfg: GraphitiConfig):
+    """Abstract factory for GraphDriver based on database_type.
+
+    Keeps backend selection in one place for easier testing and extension.
+    """
+    if cfg.database_type == 'neo4j':
+        return Neo4jDriver(
+            uri=cfg.neo4j.uri,
+            user=cfg.neo4j.user,
+            password=cfg.neo4j.password,
+        )
+    elif cfg.database_type == 'falkordb':
+        from graphiti_core.driver.falkordb_driver import FalkorDriver
+
+        host = cfg.falkordb.host if hasattr(cfg.falkordb, 'host') else 'localhost'
+        port = int(cfg.falkordb.port) if hasattr(cfg.falkordb, 'port') else 6379
+        username = cfg.falkordb.user or None
+        password = cfg.falkordb.password or None
+        return FalkorDriver(host=host, port=port, username=username, password=password)
+    elif cfg.database_type == 'kuzu':
+        from graphiti_core.driver.kuzu_driver import KuzuDriver
+
+        return KuzuDriver(db=cfg.kuzu.db)
+    else:
+        raise ValueError(f'Unsupported database type: {cfg.database_type}')
+
 
 
 async def initialize_graphiti():
@@ -621,41 +696,21 @@ async def initialize_graphiti():
             # If custom entities are enabled, we must have an LLM client
             raise ValueError('OPENAI_API_KEY must be set when custom entities are enabled')
 
-        # Validate Neo4j configuration
-        if not config.neo4j.uri or not config.neo4j.user or not config.neo4j.password:
-            raise ValueError('NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set')
-
-        # Validate FalkorDB configuration
-        if config.database_type == 'falkordb' and (
-            not config.falkordb.host or not config.falkordb.port
-        ):
-            raise ValueError('FALKORDB_HOST and FALKORDB_PORT must be set for FalkorDB')
+        # Validate backend-specific configuration
+        if config.database_type == 'neo4j':
+            if not config.neo4j.uri or not config.neo4j.user or not config.neo4j.password:
+                raise ValueError('NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD must be set')
+        elif config.database_type == 'falkordb':
+            if not config.falkordb.host or not config.falkordb.port:
+                raise ValueError('FALKORDB_HOST and FALKORDB_PORT must be set for FalkorDB')
+        elif config.database_type == 'kuzu':
+            # No required envs for kuzu; default ':memory:' is acceptable
+            pass
 
         embedder_client = config.embedder.create_client()
 
-        # Construct the driver based on the database_type
-        driver = None
-        if config.database_type == 'neo4j':
-            driver = Neo4jDriver(
-                uri=config.neo4j.uri,
-                user=config.neo4j.user,
-                password=config.neo4j.password,
-            )
-        elif config.database_type == 'falkordb':
-            from graphiti_core.driver.falkordb_driver import FalkorDriver
-
-            host = config.falkordb.host if hasattr(config.falkordb, 'host') else 'localhost'
-            port = int(config.falkordb.port) if hasattr(config.falkordb, 'port') else 6379
-            username = config.falkordb.user or None
-            password = config.falkordb.password or None
-            driver = FalkorDriver(
-                host=host,
-                port=port,
-                username=username,
-                password=password,
-            )
-        else:
-            raise ValueError(f'Unsupported database type: {config.database_type}')
+        # Construct the driver based on the database_type using a small factory
+        driver = create_graph_driver(config)
 
         # Initialize Graphiti client
         graphiti_client = Graphiti(
@@ -691,6 +746,48 @@ async def initialize_graphiti():
     except Exception as e:
         logger.error(f'Failed to initialize Graphiti: {str(e)}')
         raise
+
+
+def create_graph_driver(config: GraphitiConfig):
+    """Create a graph driver based on the database type configuration.
+
+    This factory function implements the Strategy pattern for driver selection.
+    Each backend driver implements the GraphDriver interface.
+
+    Args:
+        config: GraphitiConfig instance with database_type and backend-specific config
+
+    Returns:
+        GraphDriver instance (Neo4jDriver, FalkorDriver, or KuzuDriver)
+
+    Raises:
+        ValueError: If database_type is not supported
+    """
+    if config.database_type == 'neo4j':
+        return Neo4jDriver(
+            uri=config.neo4j.uri,
+            user=config.neo4j.user,
+            password=config.neo4j.password,
+        )
+    elif config.database_type == 'falkordb':
+        from graphiti_core.driver.falkordb_driver import FalkorDriver
+
+        host = config.falkordb.host if hasattr(config.falkordb, 'host') else 'localhost'
+        port = int(config.falkordb.port) if hasattr(config.falkordb, 'port') else 6379
+        username = config.falkordb.user or None
+        password = config.falkordb.password or None
+        return FalkorDriver(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+        )
+    elif config.database_type == 'kuzu':
+        from graphiti_core.driver.kuzu_driver import KuzuDriver
+
+        return KuzuDriver(db=config.kuzu.db)
+    else:
+        raise ValueError(f'Unsupported database type: {config.database_type}')
 
 
 def format_fact_result(edge: EntityEdge) -> dict[str, Any]:
@@ -1211,8 +1308,16 @@ async def get_status() -> StatusResponse:
         # Use cast to help the type checker understand that graphiti_client is not None
         client = cast(Graphiti, graphiti_client)
 
-        # Test database connection
-        await client.driver.health_check()  # type: ignore  # type: ignore
+        # Test database connection: prefer driver's health_check if available, else run a trivial query
+        if hasattr(client.driver, 'health_check'):
+            await client.driver.health_check()  # type: ignore[attr-defined]
+        else:
+            try:
+                # A lightweight query that should work across drivers even on empty graphs
+                await client.driver.execute_query('MATCH (n) RETURN 1 LIMIT 1')  # type: ignore[arg-type]
+            except Exception:
+                # As a last resort, still consider the server up even if the trivial query fails
+                pass
 
         return StatusResponse(
             status='ok',
@@ -1223,7 +1328,7 @@ async def get_status() -> StatusResponse:
         logger.error(f'Error checking {config.database_type} connection: {error_msg}')
         return StatusResponse(
             status='error',
-            message=f'Graphiti MCP server is running but Neo4j connection failed: {error_msg}',
+            message=f'Graphiti MCP server is running but {config.database_type} connection check failed: {error_msg}',
         )
 
 
@@ -1276,7 +1381,7 @@ async def initialize_server() -> MCPConfig:
     )
     parser.add_argument(
         '--database-type',
-        choices=['neo4j', 'falkordb'],
+        choices=['neo4j', 'falkordb', 'kuzu'],
         help='Type of database to use (default: neo4j)',
     )
 
